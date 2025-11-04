@@ -1,0 +1,314 @@
+#define _GNU_SOURCE
+#include "serial.h"
+
+#include <pthread.h>
+#include <dirent.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <sys/stat.h>
+#include <zlib.h>
+
+/* --------------------------------------------------------------------------
+   here is an outline of the plan
+   1. we scan input_dir for .txt files and sort names in lex order
+   2. we build a results table with one slot per file
+   3. we push one job per file into a shared queue
+   4. workers read and compress in parallel
+   5. we write members in lex order using the starter writer
+   note we keep final writes single threaded to avoid container issues
+   -------------------------------------------------------------------------- */
+
+/* ----------------------------- data models ------------------------------ */
+
+typedef struct job {
+    char *path;           // full path to disk file
+    char *logical_name;   // name to store inside the zip
+    int index;            // position in lex order
+    struct job *next;
+} job_t;
+
+typedef struct {
+    unsigned char **out_bufs;  // one buffer per file
+    size_t *out_sizes;         // compressed size per file
+    int count;
+} results_t;
+
+/* ---------------------------- work queue core --------------------------- */
+
+typedef struct {
+    pthread_mutex_t mtx;
+    pthread_cond_t cv_have;
+    pthread_cond_t cv_done;
+    job_t *head;
+    job_t *tail;
+    int open;      // queue is open while producer pushes
+    int active;    // workers currently holding a job
+    results_t *res;
+} queue_t;
+
+// here we set up locks and flags
+static void queue_init(queue_t *q, results_t *res) {
+    // todo init mutex and cond vars
+    // todo set head and tail to null
+    // todo set open to 1 and active to 0
+    // todo store res pointer
+}
+
+// here we close the queue so workers stop waiting after drain
+static void queue_close(queue_t *q) {
+    // todo lock
+    // todo set open to 0
+    // todo broadcast cv_have
+    // todo unlock
+}
+
+// here we push a job
+static void queue_push(queue_t *q, job_t *j) {
+    // todo set j->next to null
+    // todo lock
+    // todo append to tail
+    // todo signal cv_have
+    // todo unlock
+}
+
+// here a worker pops a job or returns null if closed and empty
+static job_t* queue_pop(queue_t *q) {
+    // todo lock
+    // todo while no head and open wait on cv_have
+    // todo pop from head and update active
+    // todo unlock
+    // todo return job or null
+    return NULL;
+}
+
+// here a worker reports done so we can detect global completion
+static void queue_task_done(queue_t *q) {
+    // todo lock
+    // todo decrement active
+    // todo if closed and empty and active is zero signal cv_done
+    // todo unlock
+}
+
+// here the producer waits until queue is empty and no worker is active
+static void queue_wait_all(queue_t *q) {
+    // todo lock
+    // todo while open or head not null or active not zero wait on cv_done
+    // todo unlock
+}
+
+/* ------------------------------ io helpers ------------------------------ */
+
+// here we join dir and base name
+static char* join_path(const char *dir, const char *base) {
+    // todo allocate buffer for dir plus optional slash plus base plus null
+    // todo copy dir and add slash if needed then append base
+    // todo return heap string or null on error
+    return NULL;
+}
+
+// here we read a whole file into memory
+static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
+    // todo fopen path in rb
+    // todo fseek to end then ftell for size then rewind
+    // todo malloc size bytes and fread all
+    // todo on success set *buf and *len and return 0
+    // todo on failure free and return nonzero
+    return -1;
+}
+
+/* ---------------------------- compression stub -------------------------- */
+
+// here we begin with a simple pass through so we can bring up threads first
+// later we will replace this with real zlib deflate
+static int deflate_buffer(const unsigned char *in, size_t in_len,
+                          unsigned char **out, size_t *out_len) {
+    // todo for now allocate out buffer of in_len and memcpy
+    // todo set *out_len and return 0 on success
+    // todo return nonzero on failure
+    return -1;
+}
+
+/* ------------------------------ worker code ----------------------------- */
+
+typedef struct { queue_t *q; } worker_arg_t;
+
+// here we free a job holder
+static void free_job(job_t *j) {
+    // todo free path and logical_name then j
+}
+
+// here each worker loops until the queue is closed and empty
+static void* worker_main(void *arg) {
+    worker_arg_t *wa = (worker_arg_t*)arg;
+    queue_t *q = wa->q;
+
+    for (;;) {
+        job_t *j = queue_pop(q);
+        if (!j) break;
+
+        // read file
+        unsigned char *raw = NULL; size_t raw_len = 0;
+        if (read_whole_file(j->path, &raw, &raw_len) != 0) {
+            // here we record a failure in the results
+            pthread_mutex_lock(&q->mtx);
+            q->res->out_bufs[j->index] = NULL;
+            q->res->out_sizes[j->index] = 0;
+            pthread_mutex_unlock(&q->mtx);
+            free_job(j);
+            queue_task_done(q);
+            continue;
+        }
+
+        // compress
+        unsigned char *cmp = NULL; size_t cmp_len = 0;
+        if (deflate_buffer(raw, raw_len, &cmp, &cmp_len) != 0) {
+            pthread_mutex_lock(&q->mtx);
+            q->res->out_bufs[j->index] = NULL;
+            q->res->out_sizes[j->index] = 0;
+            pthread_mutex_unlock(&q->mtx);
+            free(raw);
+            free_job(j);
+            queue_task_done(q);
+            continue;
+        }
+        free(raw);
+
+        // store into results
+        pthread_mutex_lock(&q->mtx);
+        q->res->out_bufs[j->index] = cmp;
+        q->res->out_sizes[j->index] = cmp_len;
+        pthread_mutex_unlock(&q->mtx);
+
+        free_job(j);
+        queue_task_done(q);
+    }
+    return NULL;
+}
+
+/* ----------------------- directory scan and ordering -------------------- */
+
+static int ends_with_txt(const char *s) {
+    // todo check if s ends with .txt
+    return 0;
+}
+
+static int cmp_lex(const void *a, const void *b) {
+    const char * const *pa = (const char * const *)a;
+    const char * const *pb = (const char * const *)b;
+    return strcmp(*pa, *pb);
+}
+
+// here we list .txt files in lex order and return a heap array
+static char** list_txt_lex(const char *dir, int *out_count) {
+    // todo open directory
+    // todo collect names that end with .txt into a heap array
+    // todo qsort with cmp_lex
+    // todo set out_count and return names or null on error
+    return NULL;
+}
+
+/* --------------------------- zip writer glue ---------------------------- */
+
+// here we plug into the starter zip writer
+static int zip_begin(const char *output_zip) {
+    // todo call starter open function
+    (void)output_zip;
+    return 0;
+}
+
+static int zip_write_member(const char *logical_name,
+                            const unsigned char *bytes, size_t nbytes) {
+    // todo call starter helper to write one member
+    (void)logical_name; (void)bytes; (void)nbytes;
+    return 0;
+}
+
+static int zip_end(void) {
+    // todo call starter close function
+    return 0;
+}
+
+/* ----------------------------- public entry ----------------------------- */
+
+static int clamp_threads(int requested) {
+    if (requested < 1) requested = 1;
+    if (requested > 19) requested = 19;
+    return requested;
+}
+
+int run_parallel(const char *input_dir, const char *output_zip, int requested_threads) {
+    // here we list names in lex order
+    int count = 0;
+    char **lex = list_txt_lex(input_dir, &count);
+    if (!lex || count == 0) {
+        // todo free lex if partially allocated
+        return 0;
+    }
+
+    // here we make the results table
+    results_t res = (results_t){0};
+    res.count = count;
+    res.out_bufs = (unsigned char**)calloc((size_t)count, sizeof(unsigned char*));
+    res.out_sizes = (size_t*)calloc((size_t)count, sizeof(size_t));
+    if (!res.out_bufs || !res.out_sizes) {
+        // todo free res arrays and lex
+        return -1;
+    }
+
+    // here we init the queue
+    queue_t q;
+    queue_init(&q, &res);
+
+    // here we start worker threads
+    int nthreads = clamp_threads(requested_threads);
+    pthread_t *ths = (pthread_t*)malloc((size_t)nthreads * sizeof(pthread_t));
+    worker_arg_t wa = { .q = &q };
+    for (int i = 0; i < nthreads; ++i) {
+        // todo create thread that runs worker_main with wa
+    }
+
+    // here we enqueue jobs
+    for (int i = 0; i < count; ++i) {
+        job_t *j = (job_t*)calloc(1, sizeof(job_t));
+        // todo set j->logical_name to strdup of lex[i]
+        // todo set j->path with join_path
+        // todo set j->index
+        // todo push into queue
+    }
+
+    // here we close the queue and wait for all work to finish
+    // todo queue_close
+    // todo queue_wait_all
+
+    // here we join all workers
+    for (int i = 0; i < nthreads; ++i) {
+        // todo pthread_join
+    }
+    free(ths);
+
+    // here we write members in lex order
+    if (zip_begin(output_zip) != 0) {
+        // todo decide error policy
+    }
+    for (int i = 0; i < count; ++i) {
+        if (res.out_bufs[i] && res.out_sizes[i] > 0) {
+            zip_write_member(lex[i], res.out_bufs[i], res.out_sizes[i]);
+        } else {
+            // todo decide how we handle failures
+        }
+    }
+    zip_end();
+
+    // here we clean up
+    for (int i = 0; i < count; ++i) {
+        // todo free lex[i]
+        // todo free res.out_bufs[i]
+    }
+    // todo free lex
+    // todo free res.out_bufs and res.out_sizes
+
+    return 0;
+}
