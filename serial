@@ -27,96 +27,140 @@ typedef struct job {
     char *path;           // full path to disk file
     char *logical_name;   // name to store inside the zip
     int index;            // position in lex order
-    struct job *next;
-} job_t;
+    struct job *next;     // next job in queue
+} job_t;                    // job structure
 
 typedef struct {
     unsigned char **out_bufs;  // one buffer per file
     size_t *out_sizes;         // compressed size per file
-    int count;
-} results_t;
+    int count;                // number of files
+} results_t;                 // results table
 
 /* ---------------------------- work queue core --------------------------- */
 
 typedef struct {
-    pthread_mutex_t mtx;
-    pthread_cond_t cv_have;
-    pthread_cond_t cv_done;
-    job_t *head;
-    job_t *tail;
-    int open;      // queue is open while producer pushes
-    int active;    // workers currently holding a job
-    results_t *res;
-} queue_t;
+    pthread_mutex_t mtx;        // mutex for queue operations
+    pthread_cond_t cv_have;     // condition var for job availability
+    pthread_cond_t cv_done; // condition var for queue completion
+    job_t *head;             // head of the job queue
+    job_t *tail;                // tail of the job queue
+    int open;                // queue is open while producer pushes
+    int active;                 // workers currently holding a job
+    results_t *res;              // pointer to results table
+} queue_t;                       // queue structure
 
 // here we set up locks and flags
 static void queue_init(queue_t *q, results_t *res) {
-    // todo init mutex and cond vars
-    // todo set head and tail to null
-    // todo set open to 1 and active to 0
-    // todo store res pointer
+    pthread_mutex_init(&q->mtx, NULL);      // initialize mutex
+    pthread_cond_init(&q->cv_have, NULL);   // initialize condition variable
+    pthread_cond_init(&q->cv_done, NULL); // initialize condition variable
+    q->head = q->tail = NULL;       // initialize head and tail to null
+    q->head = q->tail = NULL;       // initialize head and tail to null
+    q->open = 1;        // initialize open to 1
+    q->active = 0;      // initialize active to 0
+    q->res = res;    // store results table pointer
+    q->res = res; // store results table pointer
 }
 
 // here we close the queue so workers stop waiting after drain
-static void queue_close(queue_t *q) {
-    // todo lock
-    // todo set open to 0
-    // todo broadcast cv_have
-    // todo unlock
+static void queue_close(queue_t *q) { 
+    pthread_mutex_lock(&q->mtx); // lock mutex
+    q->open = 0; // set open to 0 
+    pthread_cond_broadcast(&q->cv_have); // broadcast condition variable
+    pthread_mutex_unlock(&q->mtx); // unlock mutex
 }
 
-// here we push a job
+// now we push a job by appending and then signal the condition var
 static void queue_push(queue_t *q, job_t *j) {
-    // todo set j->next to null
-    // todo lock
-    // todo append to tail
-    // todo signal cv_have
-    // todo unlock
-}
-
-// here a worker pops a job or returns null if closed and empty
+    j->next = NULL; // set next to null
+    pthread_mutex_lock(&q->mtx); // lock mutex
+    append_to_tail(&q->tail, j); // append to tail
+    pthread_cond_signal(&q->cv_have); // signal condition variable
+    pthread_mutex_unlock(&q->mtx); // unlock mutex
+ 
+// this section a consumer pops a job or returns null if closed and empty
 static job_t* queue_pop(queue_t *q) {
-    // todo lock
-    // todo while no head and open wait on cv_have
-    // todo pop from head and update active
-    // todo unlock
-    // todo return job or null
-    return NULL;
+    pthread_mutex_lock(&q->mtx); // lock mutex
+    while (q->head == NULL && q->open == 1) { // while no head and open
+        pthread_cond_wait(&q->cv_have, &q->mtx); // waiting for condition variable
+    }
+    job_t *job = q->head; // head
+    if (job) { // if job is not null
+        q->head = job->next; // set head to next
+        if (q->head == NULL) { // if head is null
+            q->tail = NULL; // set tail to null
+        }
+        job->next = NULL; // set next to null
+        q->active++; // increment active
+    }
+    pthread_mutex_unlock(&q->mtx); // unlock mutex
+    return job; // return job or null
 }
 
-// here a worker reports done so we can detect global completion
+// here a consumer reports done so we can detect global completion
 static void queue_task_done(queue_t *q) {
-    // todo lock
-    // todo decrement active
-    // todo if closed and empty and active is zero signal cv_done
-    // todo unlock
+    pthread_mutex_lock(&q->mtx); // lock mutex
+    q->active--; // decrement active
+    // if closed and empty and active is zero then we signal cv_done
+    if (q->open == 0 && q->head == NULL && q->active == 0) { // if open is zero and head is null and active is zero
+        pthread_cond_signal(&q->cv_done); // signal condition variable
+    }
+    pthread_mutex_unlock(&q->mtx); // unlock mutex
 }
 
-// here the producer waits until queue is empty and no worker is active
+// here the producer waits until queue is empty and no consumer is active
 static void queue_wait_all(queue_t *q) {
-    // todo lock
-    // todo while open or head not null or active not zero wait on cv_done
-    // todo unlock
+    pthread_mutex_lock(&q->mtx); // lock mutex
+    // while open or head not null or active not zero wait on cv_done
+    while (q->open == 1 || q->head != NULL || q->active != 0) {
+        pthread_cond_wait(&q->cv_done, &q->mtx); // waiting for condition variable
+    }
+    pthread_mutex_unlock(&q->mtx); // unlock mutex
 }
 
 /* ------------------------------ io helpers ------------------------------ */
 
 // here we join dir and base name
 static char* join_path(const char *dir, const char *base) {
-    // todo allocate buffer for dir plus optional slash plus base plus null
-    // todo copy dir and add slash if needed then append base
-    // todo return heap string or null on error
-    return NULL;
+    size_t dir_len = strlen(dir); // get length of dir
+    size_t base_len = strlen(base); // get length of base
+    size_t len = dir_len + 1 + base_len + 1; // now we calculate length of new path
+    char *path = (char*)malloc(len); // and allocate memory for new path
+    if (!path) { // but if allocation failed
+        return NULL; // return null
+    }
+    strcpy(path, dir); // here we copy dir to path
+    // this section we allocate buffer for dir plus optional slash plus base plus null
+    if (dir[dir_len - 1] != '/') { // if dir does not end with slash
+        path[dir_len] = '/'; // add slash
+        dir_len++; // and increment dir_len
+    }
+    strcpy(path + dir_len, base); // copy base to path
+    return path; // return new path
 }
 
 // here we read a whole file into memory
 static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
-    // todo fopen path in rb
-    // todo fseek to end then ftell for size then rewind
-    // todo malloc size bytes and fread all
-    // todo on success set *buf and *len and return 0
-    // todo on failure free and return nonzero
-    return -1;
+    FILE *file = fopen(path, "rb"); // open file in read binary mode
+    if (!file) { // if file is null
+        return -1; // return -1
+    }
+    fseek(file, 0, SEEK_END); // seek to end of file
+    long size = ftell(file); // get size of file
+    rewind(file); // rewind file
+    *buf = (unsigned char*)malloc(size); // allocate memory for buffer
+    if (!*buf) { // if buffer is null
+
+    // we need to malloc size bytes and free
+    if (fread(*buf, 1, size, file) != size) { // so if read failed
+        fclose(file); // close file
+        free(*buf); // free buffer
+        return -1; // and return -1
+    }
+    // finally t the end we set length and return 0
+    fclose(file); // close file
+    *len = size; // set length
+    return 0; // return 0
 }
 
 /* ---------------------------- compression stub -------------------------- */
@@ -133,58 +177,23 @@ static int deflate_buffer(const unsigned char *in, size_t in_len,
 
 /* ------------------------------ worker code ----------------------------- */
 
-typedef struct { queue_t *q; } worker_arg_t;
+typedef struct {
+    // todo stash whatever state each worker needs (likely queue pointer)
+    queue_t *q;
+} worker_arg_t;
 
 // here we free a job holder
 static void free_job(job_t *j) {
-    // todo free path and logical_name then j
+    // todo free path, logical_name, and then the job struct
 }
 
 // here each worker loops until the queue is closed and empty
 static void* worker_main(void *arg) {
-    worker_arg_t *wa = (worker_arg_t*)arg;
-    queue_t *q = wa->q;
-
-    for (;;) {
-        job_t *j = queue_pop(q);
-        if (!j) break;
-
-        // read file
-        unsigned char *raw = NULL; size_t raw_len = 0;
-        if (read_whole_file(j->path, &raw, &raw_len) != 0) {
-            // here we record a failure in the results
-            pthread_mutex_lock(&q->mtx);
-            q->res->out_bufs[j->index] = NULL;
-            q->res->out_sizes[j->index] = 0;
-            pthread_mutex_unlock(&q->mtx);
-            free_job(j);
-            queue_task_done(q);
-            continue;
-        }
-
-        // compress
-        unsigned char *cmp = NULL; size_t cmp_len = 0;
-        if (deflate_buffer(raw, raw_len, &cmp, &cmp_len) != 0) {
-            pthread_mutex_lock(&q->mtx);
-            q->res->out_bufs[j->index] = NULL;
-            q->res->out_sizes[j->index] = 0;
-            pthread_mutex_unlock(&q->mtx);
-            free(raw);
-            free_job(j);
-            queue_task_done(q);
-            continue;
-        }
-        free(raw);
-
-        // store into results
-        pthread_mutex_lock(&q->mtx);
-        q->res->out_bufs[j->index] = cmp;
-        q->res->out_sizes[j->index] = cmp_len;
-        pthread_mutex_unlock(&q->mtx);
-
-        free_job(j);
-        queue_task_done(q);
-    }
+    // todo cast arg to worker_arg_t and grab queue pointer
+    // todo loop popping jobs until queue_pop returns null
+    // todo read each file, handle failures, and record results
+    // todo compress raw bytes, update q->res, and clean up buffers
+    // todo free the job, call queue_task_done, and continue
     return NULL;
 }
 
