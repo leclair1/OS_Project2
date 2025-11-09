@@ -55,6 +55,14 @@ static void queue_init(queue_t *q, results_t *res) {
     // todo set head and tail to null
     // todo set open to 1 and active to 0
     // todo store res pointer
+    pthread_mutex_init(&q->mtx, NULL);
+    pthread_cond_init(&q->cv_have, NULL);
+    pthread_cond_init(&q->cv_done, NULL);
+    q->head = NULL;
+    q->tail = NULL;
+    q->open = 1;
+    q->active = 0;
+    q->res = res;
 }
 
 // here we close the queue so workers stop waiting after drain
@@ -63,6 +71,11 @@ static void queue_close(queue_t *q) {
     // todo set open to 0
     // todo broadcast cv_have
     // todo unlock
+    pthread_mutex_lock(&q->mtx);
+    q->open = 0;
+    pthread_cond_broadcast(&q->cv_have);
+    pthread_mutex_unlock(&q->mtx);
+
 }
 
 // here we push a job
@@ -72,6 +85,16 @@ static void queue_push(queue_t *q, job_t *j) {
     // todo append to tail
     // todo signal cv_have
     // todo unlock
+    j->next = NULL;
+    pthread_mutex_lock(&q->mtx);
+    if (q->tail) {
+        q->tail->next = j;
+    } else {
+        q->head = j;
+    }
+    q->tail = j;
+    pthread_cond_signal(&q->cv_have);
+    pthread_mutex_unlock(&q->mtx);
 }
 
 // here a worker pops a job or returns null if closed and empty
@@ -81,7 +104,18 @@ static job_t* queue_pop(queue_t *q) {
     // todo pop from head and update active
     // todo unlock
     // todo return job or null
-    return NULL;
+    pthread_mutex_lock(&q->mtx);
+   while (!q->head && q->open) {
+        pthread_cond_wait(&q->cv_have, &q->mtx);
+    }
+    job_t *j = q->head;
+    if (j) {
+        q->head = j->next;
+        if (!q->head) q->tail = NULL;
+        q->active++;
+    }
+    pthread_mutex_unlock(&q->mtx);
+    return j;
 }
 
 // here a worker reports done so we can detect global completion
@@ -90,6 +124,12 @@ static void queue_task_done(queue_t *q) {
     // todo decrement active
     // todo if closed and empty and active is zero signal cv_done
     // todo unlock
+    pthread_mutex_lock(&q->mtx);
+    q->active--;
+    if (!q->open && !q->head && q->active == 0) {
+        pthread_cond_signal(&q->cv_done);
+    }
+    pthread_mutex_unlock(&q->mtx);
 }
 
 // here the producer waits until queue is empty and no worker is active
@@ -97,6 +137,11 @@ static void queue_wait_all(queue_t *q) {
     // todo lock
     // todo while open or head not null or active not zero wait on cv_done
     // todo unlock
+    pthread_mutex_lock(&q->mtx);
+    while (q->open || q->head || q->active > 0) {
+        pthread_cond_wait(&q->cv_done, &q->mtx);
+    }
+    pthread_mutex_unlock(&q->mtx);
 }
 
 /* ------------------------------ io helpers ------------------------------ */
@@ -241,10 +286,11 @@ static int clamp_threads(int requested) {
 
 int run_parallel(const char *input_dir, const char *output_zip, int requested_threads) {
     // here we list names in lex order
-    int count = 0;
+   int count = 0;
     char **lex = list_txt_lex(input_dir, &count);
     if (!lex || count == 0) {
-        // todo free lex if partially allocated
+ // todo free lex if partially allocated
+        if (lex) free(lex);
         return 0;
     }
 
@@ -255,7 +301,12 @@ int run_parallel(const char *input_dir, const char *output_zip, int requested_th
     res.out_sizes = (size_t*)calloc((size_t)count, sizeof(size_t));
     if (!res.out_bufs || !res.out_sizes) {
         // todo free res arrays and lex
+        free(res.out_bufs);
+        free(res.out_sizes);
+        for (int i = 0; i < count; i++) free(lex[i]);
+        free(lex);
         return -1;
+        
     }
 
     // here we init the queue
@@ -268,6 +319,7 @@ int run_parallel(const char *input_dir, const char *output_zip, int requested_th
     worker_arg_t wa = { .q = &q };
     for (int i = 0; i < nthreads; ++i) {
         // todo create thread that runs worker_main with wa
+      pthread_create(&ths[i], NULL, worker_main, &wa);
     }
 
     // here we enqueue jobs
