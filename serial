@@ -270,6 +270,10 @@ static void* worker_main(void *arg) {
 
 static int ends_with_txt(const char *s) {
     // todo check if s ends with .txt
+   size_t len = strlen(s);
+    if (len < 4) return 0;
+    return (s[len-4] == '.' && s[len-3] == 't' && 
+            s[len-2] == 'x' && s[len-1] == 't');
     return 0;
 }
 
@@ -357,20 +361,24 @@ int run_parallel(const char *input_dir, const char *output_zip, int requested_th
 
     // here we enqueue jobs
     for (int i = 0; i < count; ++i) {
-        job_t *j = (job_t*)calloc(1, sizeof(job_t));
         // todo set j->logical_name to strdup of lex[i]
         // todo set j->path with join_path
         // todo set j->index
         // todo push into queue
+          job_t *j = (job_t*)calloc(1, sizeof(job_t)); 
+          j->logical_name = strdup(lex[i]);  
+          j->path = join_path(input_dir, lex[i]); 
+          j->index = i;
+          queue_push(&q, j);
     }
 
     // here we close the queue and wait for all work to finish
-    // todo queue_close
-    // todo queue_wait_all
+      queue_close(&q); // todo queue_close
+      queue_wait_all(&q);  // todo queue_wait_all
 
     // here we join all workers
     for (int i = 0; i < nthreads; ++i) {
-        // todo pthread_join
+        pthread_join(ths[i], NULL); // todo pthread_join
     }
     free(ths);
 
@@ -389,11 +397,12 @@ int run_parallel(const char *input_dir, const char *output_zip, int requested_th
 
     // here we clean up
     for (int i = 0; i < count; ++i) {
-        // todo free lex[i]
-        // todo free res.out_bufs[i]
+         free(lex[i]); // todo free lex[i]
+        free(res.out_bufs[i]); // todo free res.out_bufs[i]
     }
-    // todo free lex
-    // todo free res.out_bufs and res.out_sizes
+    free(lex); // todo free lex
+    free(res.out_bufs);
+    free(res.out_sizes);// todo free res.out_bufs and res.out_sizes
 
     return 0;
 }
