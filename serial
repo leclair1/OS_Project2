@@ -78,6 +78,7 @@ static void queue_push(queue_t *q, job_t *j) {
     append_to_tail(&q->tail, j); // append to tail
     pthread_cond_signal(&q->cv_have); // signal condition variable
     pthread_mutex_unlock(&q->mtx); // unlock mutex
+}
  
 // this section a consumer pops a job or returns null if closed and empty
 static job_t* queue_pop(queue_t *q) {
@@ -151,6 +152,9 @@ static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
     rewind(file); // rewind file
     *buf = (unsigned char*)malloc(size); // allocate memory for buffer
     if (!*buf) { // if buffer is null
+        fclose(file); // close file
+        return -1; // return -1
+    }
 
     // we need to malloc size bytes and free
     if (fread(*buf, 1, size, file) != size) { // so if read failed
@@ -202,27 +206,65 @@ static int deflate_buffer(const unsigned char *in, size_t in_len, unsigned char 
     return 0; // return 0
 }
 
-/* ------------------------------ worker code ----------------------------- */
+/* ------------------------------ worker/consumer code ----------------------------- */
 
 typedef struct {
-    // todo stash whatever state each worker needs (likely queue pointer)
-    queue_t *q;
+    queue_t *q;                   // store the queue pointer for this worker
 } worker_arg_t;
 
-// here we free a job holder
+/* here we free a single job and its owned fields */
 static void free_job(job_t *j) {
-    // todo free path, logical_name, and then the job struct
+    if (!j) return;            // check if the job is null before freeing
+    free(j->path);                // free the memory used for the file path
+    free(j->logical_name);        // and free the memory used for the logical name
+    free(j);                   // as well as free the job struct 
 }
 
-// here each worker loops until the queue is closed and empty
+/* here each worker keeps taking jobs until the queue returns null (closed and empty) */
 static void* worker_main(void *arg) {
-    // todo cast arg to worker_arg_t and grab queue pointer
-    // todo loop popping jobs until queue_pop returns null
-    // todo read each file, handle failures, and record results
-    // todo compress raw bytes, update q->res, and clean up buffers
-    // todo free the job, call queue_task_done, and continue
-    return NULL;
+    worker_arg_t *wa = (worker_arg_t *)arg;   // making the argument the right type
+
+    if (!wa || !wa->q) {          // checking if the argument or queue is missing
+        return NULL;              // and if so.. we stop the thread early if no work is possible
+    }
+
+    queue_t *q = wa->q;       //  the queue pointer for convenience
+
+    for (;;) {                  // looping queue forever until null
+        job_t *j = queue_pop(q);  //  taking one job from the queue (may block)
+        if (!j) {                 // here we check if the queue is empty and closed
+            break;          // and if so, we break out because no more jobs
+        }
+
+        unsigned char *raw = NULL;     //  file's raw bytes
+        size_t raw_len = 0;            // raw file size
+        unsigned char *zip = NULL;   // the compressed data
+        size_t zip_len = 0;         // and here we store the compressed size
+
+        int read_ok = read_whole_file(j->path, &raw, &raw_len);   // reading the file
+
+        if (read_ok == 0 && raw && raw_len > 0) {                 // thren we check if we check if read worked
+            int def_ok = deflate_buffer(raw, raw_len, &zip, &zip_len);   // if yes, then compress the data
+
+            if (def_ok == 0 && zip && zip_len > 0) {              // now if compression worked
+                results_t *res = q->res;                          // then we get the shared results struct
+                if (res && j->index >= 0 && (size_t)j->index < (size_t)res->count) { // and if the index is valid
+                    res->out_bufs[j->index] = zip;                // then we store the compressed data
+                    res->out_sizes[j->index] = zip_len;           // store the compressed size
+                    zip = NULL;                                   // and we set zip to null so we don’t free it
+                }
+            }
+        }
+
+        free(raw);      // free the raw buffer we allocated
+        free(zip);          //  free the zip buffer if it wasn’t stored
+        queue_task_done(q);  // marking the job as finished in the queue
+        free_job(j);        // here we free the job struct and its memory
+    }
+    return NULL;      // and then  we end the thread and return
 }
+
+
 
 /* ----------------------- directory scan and ordering -------------------- */
 
