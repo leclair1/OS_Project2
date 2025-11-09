@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <limits.h>
 #include <zlib.h>
 
 /* --------------------------------------------------------------------------
@@ -164,15 +165,41 @@ static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
 }
 
 /* ---------------------------- compression stub -------------------------- */
+// here we deflate  buffer using zlib
+static int deflate_buffer(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len) {
+    if (!out || !out_len) { // if output or output length is null
+        return -1; // return -1
+    }
+    *out = NULL; // set output to null
+    *out_len = 0; // set output length to 0
+    if (in_len > (size_t)ULONG_MAX) { // if input length is greater than ULONG_MAX
+        return -1; // return -1
+    }
 
-// here we begin with a simple pass through so we can bring up threads first
-// later we will replace this with real zlib deflate
-static int deflate_buffer(const unsigned char *in, size_t in_len,
-                          unsigned char **out, size_t *out_len) {
-    // todo for now allocate out buffer of in_len and memcpy
-    // todo set *out_len and return 0 on success
-    // todo return nonzero on failure
-    return -1;
+    uLong src_len = (uLong)in_len; // converting input length to uLong
+    uLongf dst_len = compressBound(src_len); // getting compressed dir length
+    if (dst_len == 0) { // if compressed dir length is zero...
+        dst_len = 1; // then set dir length to 1
+    }
+    unsigned char *dst = (unsigned char*)malloc((size_t)dst_len); // allocate compressed buffer
+    if (!dst) { // if compressed buffer is null
+        return -1; // return -1
+    }
+
+    int zrc = compress2(dst, &dst_len, (const Bytef*)in, src_len, Z_BEST_SPEED); // compress input'
+    // here we check if compression failed
+    if (zrc != Z_OK) { // if compression failed
+        free(dst); // free compressed buffer
+        return -1; // return -1
+    }
+    unsigned char *tight = (unsigned char*)realloc(dst, (size_t)dst_len); // reallocate compressed buffer
+    if (tight) { // if reallocation successful
+        dst = tight; // set dst to tight
+    }
+
+    *out = dst; // set output to compressed buffer
+    *out_len = (size_t)dst_len; // set output length
+    return 0; // return 0
 }
 
 /* ------------------------------ worker code ----------------------------- */
