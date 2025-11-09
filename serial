@@ -250,10 +250,11 @@ static int clamp_threads(int requested) {
 
 int run_parallel(const char *input_dir, const char *output_zip, int requested_threads) {
     // here we list names in lex order
-    int count = 0;
+   int count = 0;
     char **lex = list_txt_lex(input_dir, &count);
     if (!lex || count == 0) {
-        // todo free lex if partially allocated
+ // todo free lex if partially allocated
+        if (lex) free(lex);
         return 0;
     }
 
@@ -264,7 +265,12 @@ int run_parallel(const char *input_dir, const char *output_zip, int requested_th
     res.out_sizes = (size_t*)calloc((size_t)count, sizeof(size_t));
     if (!res.out_bufs || !res.out_sizes) {
         // todo free res arrays and lex
+        free(res.out_bufs);
+        free(res.out_sizes);
+        for (int i = 0; i < count; i++) free(lex[i]);
+        free(lex);
         return -1;
+        
     }
 
     // here we init the queue
@@ -277,6 +283,7 @@ int run_parallel(const char *input_dir, const char *output_zip, int requested_th
     worker_arg_t wa = { .q = &q };
     for (int i = 0; i < nthreads; ++i) {
         // todo create thread that runs worker_main with wa
+      pthread_create(&ths[i], NULL, worker_main, &wa);
     }
 
     // here we enqueue jobs
