@@ -115,15 +115,15 @@ static void queue_wait_all(queue_t *q) { // waiting for all tasks to be done
     pthread_mutex_unlock(&q->mtx); // unlock the mutex
 }
 
-/* ------------------------------ small utils ----------------------------- */
-
+/* ------------------------------ helper functions ----------------------------- */
+// ensures we enumerate exactly the .txt files the starter code expects
 static int ends_with_txt(const char *s) {
     size_t n = strlen(s);
-    return n >= 4 &&
-           s[n - 4] == '.' &&
-           s[n - 3] == 't' &&
-           s[n - 2] == 'x' &&
-           s[n - 1] == 't';
+    return n >= 4 && // if the length of the string is greater than or equal to 4
+           s[n - 4] == '.' && // if the string ends with .
+           s[n - 3] == 't' && // if the string ends with t
+           s[n - 2] == 'x' && // if the string ends with x
+           s[n - 1] == 't'; // if the string ends with t
 }
 
 static char* join_path(const char *dir, const char *base) { // joining the path of the file
@@ -142,11 +142,11 @@ static char* join_path(const char *dir, const char *base) { // joining the path 
 
 // here we read the entire file into a malloc'd buffer
 static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
-    *buf = NULL;
-    *len = 0;
+    *buf = NULL; // set the buffer to NULL
+    *len = 0; // set the length to 0
 
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
+    FILE *f = fopen(path, "rb"); // open the file in binary mode
+    if (!f) return -1; // if the file does not exist, return -1
 
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     long sz = ftell(f);
@@ -231,51 +231,51 @@ static char** list_txt_lex(const char *dir, int *out_count) { // listing the txt
 // here we deflate using zlib header+trailer, mirroring the starter code
 static int deflate_buffer(const unsigned char *in, size_t in_len,
                           unsigned char **out, size_t *out_len) {
-    if (!out || !out_len) return -1;
+    if (!out || !out_len) return -1; // if the output or output length is NULL, return -1
 
     z_stream strm;
-    memset(&strm, 0, sizeof(strm));
-    if (deflateInit(&strm, 9) != Z_OK) return -1;
+    memset(&strm, 0, sizeof(strm)); // memset the stream to 0
+    if (deflateInit(&strm, 9) != Z_OK) return -1; // if the initialization fails, return -1
 
-    size_t cap = in_len ? in_len + in_len / 10 + 64 : 64;
-    unsigned char *dst = (unsigned char*)malloc(cap);
-    if (!dst) {
-        deflateEnd(&strm);
-        return -1;
+    size_t cap = in_len ? in_len + in_len / 10 + 64 : 64; // calculate the capacity
+    unsigned char *dst = (unsigned char*)malloc(cap); // allocate memory for the destination
+    if (!dst) { // if the memory allocation fails, end the stream and return -1
+        deflateEnd(&strm); // end the stream
+        return -1; // return -1
     }
 
-    strm.next_in = (unsigned char*)in;
-    strm.avail_in = (unsigned int)in_len;
-    strm.next_out = dst;
-    strm.avail_out = (unsigned int)cap;
+    strm.next_in = (unsigned char*)in; // set the next input to the input
+    strm.avail_in = (unsigned int)in_len; // set the available input to the input length
+    strm.next_out = dst; // set the next output to the destination
+    strm.avail_out = (unsigned int)cap; // set the available output to the capacity
 
     for (;;) {
         if (strm.avail_out == 0) {
             size_t used = strm.total_out;
             cap *= 2;
-            unsigned char *grown = (unsigned char*)realloc(dst, cap);
-            if (!grown) {
-                free(dst);
-                deflateEnd(&strm);
-                return -1;
+            unsigned char *grown = (unsigned char*)realloc(dst, cap); 
+            if (!grown) { // if the memory allocation fails, free the destination and end the stream and return -1
+                free(dst); // free the destination
+                deflateEnd(&strm); // end the stream
+                return -1; // return -1
             }
-            dst = grown;
-            strm.next_out = dst + used;
-            strm.avail_out = (unsigned int)(cap - used);
+            dst = grown; // set the destination to the grown destination
+            strm.next_out = dst + used; // set the next output to the destination + used
+            strm.avail_out = (unsigned int)(cap - used); // set the available output to the capacity - used
         }
-        int ret = deflate(&strm, Z_FINISH);
-        if (ret == Z_STREAM_END) break;
+        int ret = deflate(&strm, Z_FINISH); // deflate the stream
+        if (ret == Z_STREAM_END) break; // if the stream ends, break
         if (ret != Z_OK) {
-            free(dst);
-            deflateEnd(&strm);
-            return -1;
+            free(dst); // free the destination
+            deflateEnd(&strm); // end the stream
+            return -1; // return -1
         }
     }
 
-    *out_len = strm.total_out;
-    *out = dst;
-    deflateEnd(&strm);
-    return 0;
+    *out_len = strm.total_out; // set the output length to the total output length
+    *out = dst; // set the output to the destination
+    deflateEnd(&strm); // end the stream
+    return 0; // return 0
 }
 
 /* --------------------------- worker functions --------------------------- */
@@ -467,26 +467,26 @@ void compress_directory(char *directory_name) { // compressing the directory
     }
     free(ths); // free the threads
 
-    size_t total_in = 0;
-    size_t total_out = 0;
-    for (int i = 0; i < nfiles; ++i) {
+    size_t total_in = 0; // initialize the total input size to 0
+    size_t total_out = 0; // initialize the total output size to 0
+    for (int i = 0; i < nfiles; ++i) { // write the output buffers to the output file
         if (res.out_bufs[i] && res.out_sizes[i] > 0) {
-            uint32_t stored = (uint32_t)res.out_sizes[i];
-            fwrite(&stored, sizeof(uint32_t), 1, f_out);
-            fwrite(res.out_bufs[i], 1, res.out_sizes[i], f_out);
-            total_in  += res.in_sizes[i];
-            total_out += res.out_sizes[i];
+            uint32_t stored = (uint32_t)res.out_sizes[i]; // seting the stored to the output size
+            fwrite(&stored, sizeof(uint32_t), 1, f_out); // writing the stored to the output file
+            fwrite(res.out_bufs[i], 1, res.out_sizes[i], f_out); // writing the output buffer to the output file
+            total_in  += res.in_sizes[i]; // increment the total input size by the input size
+            total_out += res.out_sizes[i]; // increment the total output size by the output size
         }
     }
     fclose(f_out); // close the output file
 
-    if (total_in > 0) {
-        double saved = (double)(total_in - total_out) / (double)total_in;
-        printf("Compression rate: %.2lf%%\n", saved * 100.0);
+    if (total_in > 0) { // if the total input size is greater than 0, print the compression rate
+        double saved = (double)(total_in - total_out) / (double)total_in; // calculate the compression rate
+        printf("Compression rate: %.2lf%%\n", saved * 100.0); // print the compression rate
     }
 
     /* cleanup */
-    for (int i = 0; i < nfiles; ++i) {
+    for (int i = 0; i < nfiles; ++i) { // free the files and the output buffers and the output sizes and the input sizes
         free(files[i]); // free the file
         free(res.out_bufs[i]); // free the output buffer
     }
