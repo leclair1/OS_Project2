@@ -19,14 +19,16 @@
 
 
 /* --------------------------------------------------------------------------
-   Basic Overview of our flow
+   overview
    1) scan directory for *.txt files and sort them lexicographically
    2) create one job per file and push into a bounded queue
    3) worker threads pull jobs, read/deflate, and store results
    4) write all members to text.tzip: [uint32 size][bytes] in lex order
+   note: final container write is performed by the main thread
    -------------------------------------------------------------------------- */
 
 /* ----------------------------- data models ------------------------------ */
+
 typedef struct job {
     char *path;            // full path to disk file
     int   index;           // position in lexicographical order
@@ -140,35 +142,39 @@ static char* join_path(const char *dir, const char *base) { // joining the path 
 
 // here we read the entire file into a malloc'd buffer
 static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
-    *buf = NULL; // set the buffer to NULL
-    *len = 0; // set the length to 0
+    *buf = NULL;
+    *len = 0;
 
-    FILE *f = fopen(path, "rb"); // open the file in binary mode
-    if (!f) return -1; // if the file does not exist, return -1
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
 
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; } // if the file seek fails, close the file and return -1
-    long sz = ftell(f); // get the size of the file
-    if (sz < 0) { fclose(f); return -1; } // if the size is less than 0, close the file and return -1
-    rewind(f); // rewind the file
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return -1; }
+    rewind(f);
 
-    if (sz == 0) { // if the size is 0, close the file and return 0
-        fclose(f); // close the file
-        return 0; // return 0
+    if (sz == 0) {
+        fclose(f);
+        return 0;                 // empty file: buf=NULL, len=0
     }
 
-    unsigned char *tmp = (unsigned char*)malloc((size_t)sz); // allocate memory for the buffer
-    if (!tmp) { fclose(f); return -1; } // if the memory allocation fails, close the file and return -1
+    unsigned char *tmp = (unsigned char*)malloc((size_t)sz);
+    if (!tmp) { fclose(f); return -1; }
 
-    size_t off = 0; // initialize the offset to 0
-    while (off < (size_t)sz) { // while the offset is less than the size
-        size_t n = fread(tmp + off, 1, (size_t)sz - off, f); // read the file into the buffer
-        if (n == 0) { // if the read fails, free the buffer and close the file and return -1
-            if (ferror(f)) { free(tmp); fclose(f); return -1; } // if the read fails, free the buffer and close the file and return -1
+    size_t off = 0;
+    while (off < (size_t)sz) {
+        size_t n = fread(tmp + off, 1, (size_t)sz - off, f);
+        if (n == 0) {
+            if (ferror(f)) { free(tmp); fclose(f); return -1; }
             break; // EOF
         }
-        off += n; // increment the offset by the number of bytes read
+        off += n;
     }
-    fclose(f); // close the file
+    fclose(f);
+
+    *buf = tmp;
+    *len = off;
+    return 0;
 }
 static int cmp_lex(const void *a, const void *b) { // comparing the two strings lexicographically
     const char * const *pa = (const char * const*)a; // get the pointer to the first string
@@ -223,53 +229,53 @@ static char** list_txt_lex(const char *dir, int *out_count) { // listing the txt
 }
 
 // here we deflate using zlib header+trailer, mirroring the starter code
-static int deflate_buffer(const unsigned char *in, size_t in_len, 
-                          unsigned char **out, size_t *out_len) { 
-    if (!out || !out_len) return -1; // if the output or output length is NULL, return -1
+static int deflate_buffer(const unsigned char *in, size_t in_len,
+                          unsigned char **out, size_t *out_len) {
+    if (!out || !out_len) return -1;
 
-    z_stream strm; // initialize the stream
-    memset(&strm, 0, sizeof(strm)); // memset the stream to 0
-    if (deflateInit(&strm, 9) != Z_OK) return -1; // if the initialization fails, return -1
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    if (deflateInit(&strm, 9) != Z_OK) return -1;
 
-    size_t cap = in_len ? in_len + in_len / 10 + 64 : 64; // calculate the capacity
-    unsigned char *dst = (unsigned char*)malloc(cap); // allocate memory for the destination
-    if (!dst) { // if the memory allocation fails, end the stream and return -1
-        deflateEnd(&strm); // end the stream
-        return -1; // return -1
+    size_t cap = in_len ? in_len + in_len / 10 + 64 : 64;
+    unsigned char *dst = (unsigned char*)malloc(cap);
+    if (!dst) {
+        deflateEnd(&strm);
+        return -1;
     }
 
-    strm.next_in = (unsigned char*)in; // set the next input to the input
-    strm.avail_in = (unsigned int)in_len; // set the available input to the input length
-    strm.next_out = dst; // set the next output to the destination
-    strm.avail_out = (unsigned int)cap; // set the available output to the capacity
+    strm.next_in = (unsigned char*)in;
+    strm.avail_in = (unsigned int)in_len;
+    strm.next_out = dst;
+    strm.avail_out = (unsigned int)cap;
 
     for (;;) {
-        if (strm.avail_out == 0) { // if the available output is 0, set the used to the total output length, double the capacity, allocate memory for the grown destination, if the grown destination is NULL, free the destination and end the stream and return -1
-            size_t used = strm.total_out; // set the used to the total output length
-            cap *= 2; // double the capacity
-            unsigned char *grown = (unsigned char*)realloc(dst, cap); // allocate memory for the grown destination
-            if (!grown) { // if the memory allocation fails, free the destination and end the stream and return -1
-                free(dst); // free the destination
-                deflateEnd(&strm); // end the stream
-                return -1; // return -1
+        if (strm.avail_out == 0) {
+            size_t used = strm.total_out;
+            cap *= 2;
+            unsigned char *grown = (unsigned char*)realloc(dst, cap);
+            if (!grown) {
+                free(dst);
+                deflateEnd(&strm);
+                return -1;
             }
             dst = grown;
-            strm.next_out = dst + used; // set the next output to the destination + used
-            strm.avail_out = (unsigned int)(cap - used); // set the available output to the capacity - used
+            strm.next_out = dst + used;
+            strm.avail_out = (unsigned int)(cap - used);
         }
-        int ret = deflate(&strm, Z_FINISH); // deflate the stream
-        if (ret == Z_STREAM_END) break; // if the stream ends, break
-        if (ret != Z_OK) { // if the deflate fails, free the destination and end the stream and return -1
-            free(dst); // free the destination
-            deflateEnd(&strm); // end the stream
-            return -1; // return -1
+        int ret = deflate(&strm, Z_FINISH);
+        if (ret == Z_STREAM_END) break;
+        if (ret != Z_OK) {
+            free(dst);
+            deflateEnd(&strm);
+            return -1;
         }
     }
 
-    *out_len = strm.total_out; // set the output length to the total output length
-    *out = dst; // set the output to the destination
-    deflateEnd(&strm); // end the stream
-    return 0; // return 0
+    *out_len = strm.total_out;
+    *out = dst;
+    deflateEnd(&strm);
+    return 0;
 }
 
 /* --------------------------- worker functions --------------------------- */
@@ -291,8 +297,8 @@ static void process_job(job_t *j, results_t *res) {
     if (read_whole_file(j->path, &raw, &raw_len) != 0) {
         // hard-fail rather than writing a bogus 0-sized member
         //fprintf(stderr, "failed to read %s\n", j->path);
-        res->in_sizes[j->index]  = 0; // set the input size to 0
-        res->out_sizes[j->index] = 0; // set the output size to 0
+        res->in_sizes[j->index]  = 0;
+        res->out_sizes[j->index] = 0;
         res->out_bufs[j->index]  = NULL;
         return;
     }
@@ -301,17 +307,17 @@ static void process_job(job_t *j, results_t *res) {
     size_t cmp_len = 0;
     if (deflate_buffer(raw, raw_len, &cmp, &cmp_len) != 0) {
         //fprintf(stderr, "deflate failed for %s\n", j->path);
-        res->in_sizes[j->index]  = raw_len; // set the input size to the raw length
-        res->out_sizes[j->index] = 0; // set the output size to 0
-        res->out_bufs[j->index]  = NULL; // set the output buffer to NULL
-        free(raw); // free the raw buffer
+        res->in_sizes[j->index]  = raw_len;
+        res->out_sizes[j->index] = 0;
+        res->out_bufs[j->index]  = NULL;
+        free(raw);
         return;
     }
 
-    res->in_sizes[j->index]  = raw_len; // set the input size to the raw length
-    res->out_sizes[j->index] = cmp_len; // set the output size to the compressed length
-    res->out_bufs[j->index]  = cmp; // set the output buffer to the compressed buffer
-    free(raw); // free the raw buffer
+    res->in_sizes[j->index]  = raw_len;
+    res->out_sizes[j->index] = cmp_len;
+    res->out_bufs[j->index]  = cmp;
+    free(raw);
 }
 
 
