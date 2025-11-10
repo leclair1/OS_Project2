@@ -1,7 +1,8 @@
 // serial.h
-#ifndef SERIAL_H
-#define SERIAL_H
-// here we expose a single entry we will call from main
-// we let caller decide thread count
-int run_parallel(const char *input_dir, const char *output_zip, int requested_threads);
+#ifndef __SERIAL_H__
+#define __SERIAL_H__
+
+// entry point expected by autograder
+void compress_directory(char *directory_name);
+
 #endif
