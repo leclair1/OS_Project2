@@ -1,3 +1,17 @@
+// Course: COP 4600 - Operating Systems
+// Group: 27
+// Members:
+//     Paige LeClair -  leclair1@usf.edu
+//     Laura Robayo  – Laurarobayo@usf.edu@usf.edu
+//     Nusraat Kabir - nkabir@usf.edu
+
+// Description:
+// we parallelized the baseline compressor using pthreads to speed up
+// text file compression. the program scans the directory for .txt files,
+// sorts them lexicographically, and pushes one job per file into a
+// synchronized queue. worker threads read and deflate files concurrently,
+// storing results in indexed buffers. the main thread writes all
+// compressed data sequentially into text.tzip to preserve order.
 #define _GNU_SOURCE
 #include "serial.h"
 
@@ -12,87 +26,88 @@
 #endif
 #include <zlib.h>
 
-#define DEFAULT_WORKER_GUESS 4
+#define DEFAULT_WORKER_GUESS 4 // default number of worker threads
 #ifndef MAX_WORKER_THREADS
 #define MAX_WORKER_THREADS 19
 #endif
 
 
-/* --------------------------------------------------------------------------
-   overview
-   1) scan directory for *.txt files and sort them lexicographically
-   2) create one job per file and push into a bounded queue
-   3) worker threads pull jobs, read/deflate, and store results
-   4) write all members to text.tzip: [uint32 size][bytes] in lex order
-   note: final container write is performed by the main thread
-   -------------------------------------------------------------------------- */
+/* -------------------------------overview-------------------------------------------
+   1) list *.txt files in lexicographic order
+   2) push one job per file into a shared queue
+   3) workers read + compress each file
+   4) main writes [uint32 size][bytes] for every file into text.tzip
 
 /* ----------------------------- data models ------------------------------ */
-
+// job_t represents one file waiting to be compressed.
 typedef struct job {
     char *path;            // full path to disk file
     int   index;           // position in lexicographical order
     struct job *next; // pointer to the next job in the queue
 } job_t;
 
+// results_t holds the data produced by all worker threads.
 typedef struct {
-    unsigned char **out_bufs; // array of pointers to the compressed files
-    size_t *out_sizes; // array of sizes of the compressed files
-    size_t *in_sizes; // array of sizes of the original files
-    int count; // number of files
-} results_t; // struct for the results
+    unsigned char **out_bufs;  // compressed data buffers per file 
+    size_t         *out_sizes; // compressed sizes (bytes) 
+    size_t         *in_sizes;  // original sizes (bytes) 
+    int             count;     //total number of files 
+} results_t;
 
 /* ---------------------------- work queue core --------------------------- */
 
 typedef struct {
-    pthread_mutex_t mtx; // mutex for the queue
-    pthread_cond_t  cv_have; // condition variable for the queue
-    pthread_cond_t  cv_done; // condition variable for the queue
-    job_t *head; // pointer to the head of the queue
-    job_t *tail; // pointer to the tail of the queue
-    int open;          // producer keeps queue open while pushing jobs
-    int active;        // number of workers currently processing items
-} queue_t; // struct for the queue
+    pthread_mutex_t mtx;      // protects everything below 
+    pthread_cond_t  not_empty;  // signaled when a new job arrives 
+    pthread_cond_t  all_done;  // signaled when work is fully finished 
+    job_t *head;              //first job in the list 
+    job_t *tail;              // last job in the list 
+    int    open;              // 1 while producer may still push jobs 
+    int    active;            // number of workers currently processing 
+} queue_t;
 
 static void queue_init(queue_t *q) { // initializing the the queue
-    pthread_mutex_init(&q->mtx, NULL); // initialize the mutex
-    pthread_cond_init(&q->cv_have, NULL); // initialize the condition variable
-    pthread_cond_init(&q->cv_done, NULL); // initialize the condition variable
-    q->head = q->tail = NULL; // initialize the head and tail to NULL
-    q->open = 1; // initialize the open flag to 1
-    q->active = 0; // initialize the active flag to 0
+    pthread_mutex_init(&q->mtx, NULL);        // lock protects shared data
+    pthread_cond_init(&q->not_empty, NULL);   // signals when a job is added
+    pthread_cond_init(&q->all_done, NULL);    // signals when all work is done
+    q->head   = NULL;           // no first job yet
+    q->tail   = NULL;         // no last job yet
+    q->open   = 1;            // still accepting new jobs
+    q->active = 0;            // no workers currently busy
 }
 
 static void queue_close(queue_t *q) { // closing the queue
-    pthread_mutex_lock(&q->mtx); // lock the mutex
-    q->open = 0; // set the open flag to 0
-    pthread_cond_broadcast(&q->cv_have); // broadcast the condition variable
-    pthread_mutex_unlock(&q->mtx); // unlock the mutex
+    pthread_mutex_lock(&q->mtx); // locking the mutex
+    q->open = 0; // setting the open flag to 0
+    pthread_cond_broadcast(&q->not_); // broadcast the condition variable
+    pthread_mutex_unlock(&q->mtx); // unlocking the mutex
 }
 
 static void queue_push(queue_t *q, job_t *j) { // pushing a job to the queue
-    j->next = NULL; // set the next pointer to NULL
-    pthread_mutex_lock(&q->mtx); // lock the mutex
+    j->next = NULL; // setting the next pointer to NULL
+    pthread_mutex_lock(&q->mtx); // locking the mutex
     if (q->tail) { // if the tail is not NULL
-        q->tail->next = j; // set the next pointer of the tail to the job
+        q->tail->next = j; // then we set the next pointer of the tail to the job
     } else { // if the tail IS NULL
-        q->head = j; // set the head to the job
+        q->head = j; // then we set the head to the job
     }
-    q->tail = j; // set the tail to the job
-    pthread_cond_signal(&q->cv_have); // signal the condition variable
-    pthread_mutex_unlock(&q->mtx); // unlock the mutex
+    q->tail = j; // setting the tail to the job
+    pthread_cond_signal(&q->not_); // signalling the condition variable
+    pthread_mutex_unlock(&q->mtx); // unlocking the mutex
 }
 
 static job_t* queue_pop(queue_t *q) { // popping a job from the queue
     pthread_mutex_lock(&q->mtx); // lock the mutex
     while (!q->head && q->open) { // while the head is NULL and the queue is open
-        pthread_cond_wait(&q->cv_have, &q->mtx); // wait for the condition variable
+        pthread_cond_wait(&q->not_, &q->mtx); // we wait for the condition variable
     }
-    job_t *j = q->head; // get the head of the queue
+    job_t *j = q->head; // getting the head of the queue
     if (j) { // if the head is not NULL
-        q->head = j->next; // set the head to the next job
-        if (!q->head) q->tail = NULL; // if the head is NULL, set the tail to NULL
-        q->active += 1; // increment the active flag
+        q->head = j->next; // then we set the head to the next job
+        if (!q->head){
+            q->tail = NULL; // if the head is NULL, set the tail to NULL
+        } 
+        q->active += 1; // incrementing the active flag
     }
     pthread_mutex_unlock(&q->mtx); // unlock the mutex
     return j; // return the job
@@ -101,8 +116,8 @@ static job_t* queue_pop(queue_t *q) { // popping a job from the queue
 static void queue_task_done(queue_t *q) { // marking a task as done
     pthread_mutex_lock(&q->mtx); // lock the mutex
     q->active -= 1; // decrement the active flag
-    if (!q->open && !q->head && q->active == 0) { // if the queue is closed, the head is NULL, and the active flag is 0
-        pthread_cond_broadcast(&q->cv_done); // broadcast the condition variable
+    if (!q->open && !q->head && q->active == 0) { // if the queue is closed, the head is NULL, and the active flag is 0....
+        pthread_cond_broadcast(&q->all_done); // then we broadcast the condition variable
     }
     pthread_mutex_unlock(&q->mtx); // unlock the mutex
 }
@@ -110,7 +125,7 @@ static void queue_task_done(queue_t *q) { // marking a task as done
 static void queue_wait_all(queue_t *q) { // waiting for all tasks to be done
     pthread_mutex_lock(&q->mtx); // lock the mutex
     while (q->open || q->head || q->active) { // while the queue is open, the head is not NULL, or the active flag is not 0
-        pthread_cond_wait(&q->cv_done, &q->mtx); // wait for the condition variable
+        pthread_cond_wait(&q->all_done, &q->mtx); // waiting for the condition variable
     }
     pthread_mutex_unlock(&q->mtx); // unlock the mutex
 }
@@ -127,12 +142,14 @@ static int ends_with_txt(const char *s) {
 }
 
 static char* join_path(const char *dir, const char *base) { // joining the path of the file
-    size_t a = strlen(dir); // get the length of the directory
-    size_t b = strlen(base); // get the length of the base
+    size_t a = strlen(dir); // getting the length of the directory
+    size_t b = strlen(base); // and the length of the base
     int needs_slash = (a > 0 && dir[a - 1] != '/'); // if the directory does not end with a slash
     char *out = (char*)malloc(a + needs_slash + b + 1); // allocate memory for the output
-    if (!out) return NULL; // if the memory allocation fails, return NULL
-    memcpy(out, dir, a); // copy the directory to the output
+    if (!out){
+         return NULL; // if the memory allocation fails, then... 
+    } 
+    memcpy(out, dir, a); // copying the directory to the output
     size_t pos = a; // get the position of the output
     if (needs_slash) out[pos++] = '/'; // if the directory does not end with a slash, add a slash
     memcpy(out + pos, base, b); // copy the base to the output
@@ -140,42 +157,53 @@ static char* join_path(const char *dir, const char *base) { // joining the path 
     return out; // return the output
 }
 
-// here we read the entire file into a malloc'd buffer
+// here we read the entire file into a malloc buffer
 static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
-    *buf = NULL; // set the buffer to NULL
-    *len = 0; // set the length to 0
-
-    FILE *f = fopen(path, "rb"); // open the file in binary mode
-    if (!f) return -1; // if the file does not exist, return -1
-
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return -1; }
-    rewind(f);
-
-    if (sz == 0) {
-        fclose(f);
-        return 0;                 // empty file: buf=NULL, len=0
+    *buf = NULL; // setting the buffer to NULL
+    *len = 0; // and the length to 0
+    FILE *f = fopen(path, "rb");      // opening the file for reading 
+    if (!f){ // if file couldnt be opened..
+         return -1; 
+    if (fseek(f, 0, SEEK_END) != 0) {  // move to the end to find its size
+        fclose(f); // and close the file
+        return -1; 
     }
-
-    unsigned char *tmp = (unsigned char*)malloc((size_t)sz);
-    if (!tmp) { fclose(f); return -1; }
-
-    size_t off = 0;
-    while (off < (size_t)sz) {
-        size_t n = fread(tmp + off, 1, (size_t)sz - off, f);
-        if (n == 0) {
-            if (ferror(f)) { free(tmp); fclose(f); return -1; }
-            break; // EOF
-        }
-        off += n;
+    long sz = ftell(f);   // get the file size in bytes
+    if (sz < 0) {   // if getting the file size failed
+        fclose(f); // close the file and return an error
+        return -1; 
     }
-    fclose(f);
+     rewind(f);  // go back to the start of the file
 
-    *buf = tmp;
-    *len = off;
-    return 0;
+    if (sz == 0) {     // if file empty
+        fclose(f); //close the file
+        return 0; // and buf=NULL, len=0
+    }
+    unsigned char *tmp = (unsigned char*)malloc((size_t)sz);  
+    if (!tmp) {   // if memory allocation failed
+        fclose(f);   // close the file and return an error
+        return -1;  
+    }
+    size_t off = 0;   // setting ounter for how many bytes have been read so far to 0
+    while (off < (size_t)sz) {  // read data from file into buffer until we've read all bytes
+        size_t n = fread(tmp + off, 1, (size_t)sz - off, f);  
+        if (n == 0) {  // if nothing was read  
+            if (ferror(f)) { // and it's a read error,
+                free(tmp);   //free
+                fclose(f);  // and close
+                return -1;  
+            }  
+            break;  // reached end of file
+        }  
+        off += n;  // update how much we've read so far
+    }
+    fclose(f);  // close the file when done
+    
+    *buf = tmp; // storing the pointer to the loaded data
+    *len = off; // store the number of bytes read
+    return 0;   
 }
+
 static int cmp_lex(const void *a, const void *b) { // comparing the two strings lexicographically
     const char * const *pa = (const char * const*)a; // get the pointer to the first string
     const char * const *pb = (const char * const*)b; // get the pointer to the second string
@@ -359,7 +387,7 @@ static int clamp_threads(int n) { // clamping the threads
     return n; // return the number of threads
 }
 
-static int hardware_threads(void) { // getting the number of hardware threads
+static int num_cores(void) { // getting the number of hardware threads
 #if defined(_WIN32) // if the operating system is Windows
     return DEFAULT_WORKER_GUESS; // return the default number of threads
 #else
@@ -370,19 +398,15 @@ static int hardware_threads(void) { // getting the number of hardware threads
 #endif
 }
 
-static int choose_worker_threads(int jobs) { // choosing the number of worker threads
-    if (jobs <= 1) return 1; // if the number of jobs is less than or equal to 1, set the number of threads to 1
-    int hw = hardware_threads(); // get the number of hardware threads
-    if (hw < 1) hw = DEFAULT_WORKER_GUESS;
-    int desired = hw; // set the desired number of threads to the number of hardware threads
-    if (jobs > desired) { // if the number of jobs is greater than the desired number of threads
-        int boosted = hw * 2; // double the number of threads
-        if (boosted > jobs) boosted = jobs; // if the number of threads is greater than the number of jobs, set the number of threads to the number of jobs
-        desired = boosted; // set the desired number of threads to the boosted number of threads
-    }
-    if (desired > jobs) desired = jobs; // if the number of threads is greater than the number of jobs, set the number of threads to the number of jobs
-    return clamp_threads(desired); // return the number of threads
+static int pick_workers(int jobs) {
+    if (jobs <= 1) return 1;
+    int cores = num_cores();
+    int want = 2 * (cores > 0 ? cores : DEFAULT_WORKER_GUESS);
+    if (want > jobs) want = jobs;
+    if (want > MAX_WORKER_THREADS) want = MAX_WORKER_THREADS;
+    return want;
 }
+
 
 /* ----------------------------- public entry ----------------------------- */
 
@@ -424,7 +448,7 @@ void compress_directory(char *directory_name) { // compressing the directory
     queue_t q; // initialize the queue
     queue_init(&q); // initialize the queue
 
-    int nthreads_target = choose_worker_threads(nfiles); // choose the number of worker threads
+    int nthreads_target = pick_workers(nfiles); // choose the number of worker threads
     pthread_t *ths = (pthread_t*)calloc((size_t)nthreads_target, sizeof(pthread_t)); // allocate memory for the threads
     worker_arg_t wa = { .q = &q, .res = &res }; // initialize the worker arguments
 
