@@ -3,7 +3,7 @@
 // Group: 4
 // Members:
 //     Paige LeClair -  leclair1@usf.edu
-//     Laura Robayo  – Laurarobayo@usf.edu@usf.edu
+//     Laura Robayo  – Laurarobayo@usf.edu
 //     Nusraat Kabir - nkabir@usf.edu
 //
 ///////////////////////////////////////////// - Description - ////////////////////////////////////////////////////////////////////////
@@ -84,7 +84,7 @@ static void queue_init(queue_t *q) { // initializing the the queue
 static void queue_close(queue_t *q) { // closing the queue
     pthread_mutex_lock(&q->mtx); // locking the mutex
     q->open = 0; // setting the open flag to 0
-    pthread_cond_broadcast(&q->not_); // broadcast the condition variable
+    pthread_cond_broadcast(&q->not_empty); // broadcast the condition variable
     pthread_mutex_unlock(&q->mtx); // unlocking the mutex
 }
 
@@ -97,14 +97,14 @@ static void queue_push(queue_t *q, job_t *j) { // pushing a job to the queue
         q->head = j; // then we set the head to the job
     }
     q->tail = j; // setting the tail to the job
-    pthread_cond_signal(&q->not_); // signalling the condition variable
+    pthread_cond_signal(&q->not_empty); // signalling the condition variable
     pthread_mutex_unlock(&q->mtx); // unlocking the mutex
 }
 
 static job_t* queue_pop(queue_t *q) { // popping a job from the queue
     pthread_mutex_lock(&q->mtx); // lock the mutex
     while (!q->head && q->open) { // while the head is NULL and the queue is open
-        pthread_cond_wait(&q->not_, &q->mtx); // we wait for the condition variable
+        pthread_cond_wait(&q->not_empty, &q->mtx); // we wait for the condition variable
     }
     job_t *j = q->head; // getting the head of the queue
     if (j) { // if the head is not NULL
@@ -472,7 +472,7 @@ void compress_directory(char *directory_name) { // compressing the directory
     int started = 0; // initialize the number of started threads to 0
     if (*workers) {
         for (int i = 0; i < nthreads_target; ++i) { // create the threads
-            if (pthread_create(*workers[i], NULL, worker_main, &wa) != 0) { // if the thread creation fails, break
+            if (pthread_create(&workers[i], NULL, worker_main, &wa) != 0) { // if the thread creation fails, break
                 break;
             }
             started += 1; // increment the number of started threads
