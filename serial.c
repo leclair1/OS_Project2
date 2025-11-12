@@ -33,9 +33,8 @@
 // thread configuration constants
 #define DEFAULT_WORKER_GUESS 4  // default number of worker threads to try
 #ifndef MAX_WORKER_THREADS // ensures we always have a max threasd limit
-#define MAX_WORKER_THREADS 19   // cap total threads to 19 (plus main thread = 20 max)
+#define MAX_WORKER_THREADS 19 // cap total threads to 19 (plus main thread = 20 max)
 #endif
-
 
 /* -------------------------------overview-------------------------------------------
    1) list *.txt files in lexicographic order
@@ -63,21 +62,21 @@ typedef struct {
 
 typedef struct {
     pthread_mutex_t mtx;      // protects everything below 
-    pthread_cond_t  not_empty;  // signaled when a new job arrives 
-    pthread_cond_t  all_done;  // signaled when work is fully finished 
+    pthread_cond_t not_empty;  // signaled when a new job arrives 
+    pthread_cond_t all_done;  // signaled when work is fully finished 
     job_t *head;              //first job in the list 
     job_t *tail;              // last job in the list 
-    int    open;              // 1 while producer may still push jobs 
-    int    active;            // number of workers currently processing 
+    int open;              // 1 while producer may still push jobs 
+    int active;            // number of workers currently processing 
 } queue_t;
 
 static void queue_init(queue_t *q) { // initializing the the queue
     pthread_mutex_init(&q->mtx, NULL);        // lock protects shared data
     pthread_cond_init(&q->not_empty, NULL);   // signals when a job is added
     pthread_cond_init(&q->all_done, NULL);    // signals when all work is done
-    q->head   = NULL;           // no first job yet
-    q->tail   = NULL;         // no last job yet
-    q->open   = 1;            // still accepting new jobs
+    q->head = NULL;           // no first job yet
+    q->tail = NULL;         // no last job yet
+    q->open = 1;            // still accepting new jobs
     q->active = 0;            // no workers currently busy
 }
 
@@ -91,11 +90,10 @@ static void queue_close(queue_t *q) { // closing the queue
 static void queue_push(queue_t *q, job_t *j) { // pushing a job to the queue
     j->next = NULL; // setting the next pointer to NULL
     pthread_mutex_lock(&q->mtx); // locking the mutex
-    if (q->tail) { // if the tail is not NULL
+    if (q->tail) // if the tail is not NULL
         q->tail->next = j; // then we set the next pointer of the tail to the job
-    } else { // if the tail IS NULL
+    else // if the tail IS NULL
         q->head = j; // then we set the head to the job
-    }
     q->tail = j; // setting the tail to the job
     pthread_cond_signal(&q->not_empty); // signalling the condition variable
     pthread_mutex_unlock(&q->mtx); // unlocking the mutex
@@ -109,9 +107,8 @@ static job_t* queue_pop(queue_t *q) { // popping a job from the queue
     job_t *j = q->head; // getting the head of the queue
     if (j) { // if the head is not NULL
         q->head = j->next; // then we set the head to the next job
-        if (!q->head){
+        if (!q->head)
             q->tail = NULL; // if the head is NULL, set the tail to NULL
-        } 
         q->active += 1; // incrementing the active flag
     }
     pthread_mutex_unlock(&q->mtx); // unlock the mutex
@@ -121,9 +118,8 @@ static job_t* queue_pop(queue_t *q) { // popping a job from the queue
 static void queue_task_done(queue_t *q) { // marking a task as done
     pthread_mutex_lock(&q->mtx); // lock the mutex
     q->active -= 1; // decrement the active flag
-    if (!q->open && !q->head && q->active == 0) { // if the queue is closed, the head is NULL, and the active flag is 0....
+    if (!q->open && !q->head && q->active == 0) // if the queue is closed, the head is NULL, and the active flag is 0....
         pthread_cond_broadcast(&q->all_done); // then we broadcast the condition variable
-    }
     pthread_mutex_unlock(&q->mtx); // unlock the mutex
 }
 
@@ -139,11 +135,8 @@ static void queue_wait_all(queue_t *q) { // waiting for all tasks to be done
 // ensures we enumerate exactly the .txt files the starter code expects
 static int ends_with_txt(const char *s) {
     size_t n = strlen(s);
-    return n >= 4 && // if the length of the string is greater than or equal to 4
-           s[n - 4] == '.' && // if the string ends with .
-           s[n - 3] == 't' && // if the string ends with t
-           s[n - 2] == 'x' && // if the string ends with x
-           s[n - 1] == 't'; // if the string ends with t
+    // if the length of the string is greater than or equal to 4, ends with ., t, x, t
+    return n >= 4 && s[n - 4] == '.' && s[n - 3] == 't' && s[n - 2] == 'x' && s[n - 1] == 't'; 
 }
 
 static char* join_path(const char *dir, const char *base) { // joining the path of the file
@@ -151,9 +144,8 @@ static char* join_path(const char *dir, const char *base) { // joining the path 
     size_t b = strlen(base); // and the length of the base
     int needs_slash = (a > 0 && dir[a - 1] != '/'); // if the directory does not end with a slash
     char *out = (char*)malloc(a + needs_slash + b + 1); // allocate memory for the output
-    if (!out){
+    if (!out)
          return NULL; // if the memory allocation fails, then... 
-    } 
     memcpy(out, dir, a); // copying the directory to the output
     size_t pos = a; // get the position of the output
     if (needs_slash) out[pos++] = '/'; // if the directory does not end with a slash, add a slash
@@ -167,9 +159,8 @@ static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
     *buf = NULL; // setting the buffer to NULL
     *len = 0; // and the length to 0
     FILE *f = fopen(path, "rb");      // opening the file for reading 
-    if (!f){ // if file couldnt be opened..
+    if (!f) // if file couldnt be opened..
          return -1; 
-    }
     if (fseek(f, 0, SEEK_END) != 0) {  // move to the end to find its size
         fclose(f); // and close the file
         return -1; 
@@ -179,7 +170,7 @@ static int read_whole_file(const char *path, unsigned char **buf, size_t *len) {
         fclose(f); // close the file and return an error
         return -1; 
     }
-     rewind(f);  // go back to the start of the file
+    rewind(f);  // go back to the start of the file
 
     if (sz == 0) {     // if file empty
         fclose(f); //close the file
@@ -248,9 +239,8 @@ static char** list_txt_lex(const char *dir, int *out_count) { // listing the txt
         }
         names[n] = strdup(ent->d_name); // duplicate the file name
         if (!names[n]) { // if the memory allocation fails, return NULL
-            for (size_t i = 0; i < n; ++i){
+            for (size_t i = 0; i < n; ++i)
                  free(names[i]); // free the names
-            }
             free(names); // free the names
             closedir(d); // closing the directory
             *out_count = 0; // set the output count to 0
@@ -265,17 +255,14 @@ static char** list_txt_lex(const char *dir, int *out_count) { // listing the txt
 }
 
 // here we deflate using zlib header+trailer, mirroring the starter code
-static int deflate_buffer(const unsigned char *in, size_t in_len,
-                          unsigned char **out, size_t *out_len) {
-    if (!out || !out_len){   // makes sure the pointers given by the caller aren’t NULL  
+static int deflate_buffer(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len) {
+    if (!out || !out_len)  // makes sure the pointers given by the caller aren’t NULL  
         return -1; // if they are, we can’t store the compressed data so return error  
-    }
     z_stream strm; 
     memset(&strm, 0, sizeof(strm)); // set all bytes in the struct to 0
 
-    if (deflateInit(&strm, 9) != Z_OK){ // tries to start zlib compression with level 9 (best compression)  
+    if (deflateInit(&strm, 9) != Z_OK) // tries to start zlib compression with level 9 (best compression)  
         return -1;  // if zlib fails to initialize, return error  
-    }
     size_t cap = in_len ? in_len + in_len / 10 + 64 : 64; // calculate the capacity
     unsigned char *dst = (unsigned char*)malloc(cap); // allocate memory for the destination
     if (!dst) {     // if memory allocation for the output buffer failed... 
@@ -303,9 +290,8 @@ static int deflate_buffer(const unsigned char *in, size_t in_len,
             strm.avail_out = (unsigned int)(cap - used); // set the available output to the capacity - used
         }
         int ret = deflate(&strm, Z_FINISH); // deflate the stream
-        if (ret == Z_STREAM_END){ // if the stream ends, 
-             break; //then break
-        }
+        if (ret == Z_STREAM_END) // if the stream ends, 
+            break; //then break
         if (ret != Z_OK) { // if zlib didn’t return Z_OK then something went wrong
             free(dst); // so we free the memory allocated for this
             deflateEnd(&strm); // end the stream
@@ -327,9 +313,8 @@ typedef struct { // struct for the worker arguments
 } worker_arg_t; // struct for the worker arguments
 
 static void free_job(job_t *j) { // freeing the job
-    if (!j){ // if the job is NULL, 
+    if (!j) // if the job is NULL, 
         return; //return
-    }
     free(j->path); // freeing the path
     free(j); // and the job
 }
@@ -350,15 +335,15 @@ static void process_job(job_t *j, results_t *res) {
 
     if (deflate_buffer(raw, raw_len, &cmp, &cmp_len) != 0) { // compress the data
         // if compression failed, record the input size but no output
-        res->in_sizes[j->index]  = raw_len;
+        res->in_sizes[j->index] = raw_len;
         res->out_sizes[j->index] = 0;
-        res->out_bufs[j->index]  = NULL;
+        res->out_bufs[j->index] = NULL;
         free(raw); // free the uncompressed buffer
         return; // stop processing this job
     }
-    res->in_sizes[j->index]  = raw_len;  // storing size before compression
+    res->in_sizes[j->index] = raw_len;  // storing size before compression
     res->out_sizes[j->index] = cmp_len;  // storing size after compression
-    res->out_bufs[j->index]  = cmp;   // storing pointer to compressed data
+    res->out_bufs[j->index] = cmp;   // storing pointer to compressed data
     free(raw); // freeing the uncompressed memory now that it’s not needed
 }
 
@@ -370,9 +355,8 @@ static void* worker_main(void *arg) { // worker main function
 
     for (;;) { //keep looping
         job_t *j = queue_pop(q); // pop a job from the queue
-        if (!j){ //if the job is NULL...
-             break; // break
-        }
+        if (!j) //if the job is NULL...
+            break; // break
         process_job(j, res); // process the job
         free_job(j); // free the job
         queue_task_done(q); // mark the task as done
@@ -380,8 +364,7 @@ static void* worker_main(void *arg) { // worker main function
     return NULL; // return NULL
 }
 
-static void process_file_direct(const char *dir, const char *name, // processing the file directly
-                                int index, results_t *res) { // processing the file directly
+static void process_file_direct(const char *dir, const char *name, int index, results_t *res) { // processing the file directly
     job_t tmp = {0}; // initialize the job to 0
     tmp.path = join_path(dir, name); // join the path of the file
     if (!tmp.path) { // if the path is NULL, return
@@ -397,8 +380,10 @@ static void process_file_direct(const char *dir, const char *name, // processing
 
 /* ------------------------- worker count helper functions ------------------------- */
 static int clamp_threads(int n) { // keep thread count within allowed range
-    if (n < 1) n = 1; // make sure we have at least one thread
-    if (n > MAX_WORKER_THREADS) n = MAX_WORKER_THREADS; // cap it at the maximum limit
+    if (n < 1) // make sure we have at least one thread
+        n = 1; 
+    if (n > MAX_WORKER_THREADS) // cap it at the maximum limit
+        n = MAX_WORKER_THREADS; 
     return n; // return the adjusted number
 }
 
@@ -421,6 +406,7 @@ static int pick_workers(int jobs) { // decide how many worker threads to use
     if (want > MAX_WORKER_THREADS) want = MAX_WORKER_THREADS; // cap it again if it’s too high
     return want; // return the final thread count
 }
+
 /* ----------------------------- public entry ----------------------------- */
 void compress_directory(char *directory_name) { // compressing the directory
     int nfiles = 0; // initializing the number of files to 0
@@ -428,7 +414,8 @@ void compress_directory(char *directory_name) { // compressing the directory
 
     FILE *f_out = fopen("text.tzip", "wb"); // open the output file in binary mode
     if (!f_out) { // if the output file does not exist, return
-        for (int i = 0; i < nfiles; ++i) free(files[i]); // free the files
+        for (int i = 0; i < nfiles; ++i) // free the files
+            free(files[i]); 
         free(files); // free the files
         return; // return
     }
@@ -436,7 +423,8 @@ void compress_directory(char *directory_name) { // compressing the directory
     if (!files || nfiles == 0) { // if the files are NULL or the number of files is 0, return
         fclose(f_out); // close the output file
         if (files) { // if the files are not NULL
-            for (int i = 0; i < nfiles; ++i) free(files[i]); // free the files
+            for (int i = 0; i < nfiles; ++i) // free the files
+                free(files[i]); 
             free(files); // free the files
         }
         return; // return
@@ -452,7 +440,8 @@ void compress_directory(char *directory_name) { // compressing the directory
 
     if (!res.out_bufs || !res.out_sizes || !res.in_sizes) {     // checking if any allocation failed (returned NULL)
         fclose(f_out);          // if yes, close the output file since we can’t continue
-        for (int i = 0; i < nfiles; ++i) free(files[i]); // free each filename string
+        for (int i = 0; i < nfiles; ++i) // free each filename string
+            free(files[i]); 
         free(files);       // free the list of filenames
         free(res.out_bufs);  // and buffers if they were allocated
         free(res.out_sizes);  // free output size array
@@ -472,17 +461,15 @@ void compress_directory(char *directory_name) { // compressing the directory
     int started = 0; // initialize the number of started threads to 0
     if (*workers) {
         for (int i = 0; i < nthreads_target; ++i) { // create the threads
-            if (pthread_create(&workers[i], NULL, worker_main, &wa) != 0) { // if the thread creation fails, break
+            if (pthread_create(&workers[i], NULL, worker_main, &wa) != 0) // if the thread creation fails, break
                 break;
-            }
             started += 1; // increment the number of started threads
         }
     }
 
     if (started == 0) { // if no worker threads were created
-        for (int i = 0; i < nfiles; ++i) {  // we go through every file one by one
+        for (int i = 0; i < nfiles; ++i)  // we go through every file one by one
             process_file_direct(directory_name, files[i], i, &res); // and process the file directly
-        }
     } 
     else { // otherwise, run in parallel with worker threads
         for (int i = 0; i < nfiles; ++i) { // create one job per file
@@ -506,9 +493,8 @@ void compress_directory(char *directory_name) { // compressing the directory
         queue_close(&q); // no more jobs will be added
         queue_wait_all(&q); // wait until the queue is empty and workers are idle
     
-        for (int i = 0; i < started; ++i) { // join all started threads
+        for (int i = 0; i < started; ++i) // join all started threads
             pthread_join(workers[i], NULL); // wait for worker i to finish
-        }
     }
     free(workers); // free the thread handle array
 
@@ -530,10 +516,10 @@ void compress_directory(char *directory_name) { // compressing the directory
     }
     // cleanup section //
     for (int i = 0; i < nfiles; ++i) { // free per-file allocations
-        free(files[i]);        // free filename string
+        free(files[i]); // free filename string
         free(res.out_bufs[i]); // free compressed buffer
     }
-    free(files);        // free filename list
+    free(files); // free filename list
     free(res.out_bufs); // and array of buffer pointers
     free(res.out_sizes);// and array of compressed sizes
     free(res.in_sizes); // lastly, free array of original sizes
