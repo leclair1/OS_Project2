@@ -285,11 +285,8 @@ static void* worker_main(void *arg) { // worker main function
 // ensures we enumerate exactly the .txt files the starter code expects
 static int ends_with_txt(const char *s) {
     size_t n = strlen(s);
-    return n >= 4 && // if the length of the string is greater than or equal to 4
-           s[n - 4] == '.' && // if the string ends with .
-           s[n - 3] == 't' && // if the string ends with t
-           s[n - 2] == 'x' && // if the string ends with x
-           s[n - 1] == 't'; // if the string ends with t
+    // if the length of the string is greater than or equal to 4 or if the string ends with ., t, x, t
+    return n >= 4 && s[n - 4] == '.' && s[n - 3] == 't' && s[n - 2] == 'x' && s[n - 1] == 't';
 }
 
 static int cmp_lex(const void *a, const void *b) { // comparing the two strings lexicographically
